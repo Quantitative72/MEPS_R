@@ -1,0 +1,139 @@
+---
+title: MEPS
+output: html_notebook
+---
+
+Set up packages
+```{r}
+install.packages("tidyverse")
+install.packages("dplyr")
+install.packages("tibble")
+install.packages("foreign")  # Only need to run these once
+ install.packages("survey")
+
+ library(foreign) # Run these every time you re-start R
+ library(survey)
+ library(tidyverse)
+ library (dplyr)
+ 
+ setwd("C:/Users/GrossKennen/OneDrive for Business/MEPS/MEPS_R")
+ library(readxl)
+CondCodes <- read_excel("C:/Users/GrossKennen/OneDrive for Business/MEPS/CODES/MEPSConditionCodes.xlsx")
+View(CondCodes)
+ 
+```
+
+Load IP data and MEPS CCS Service Line grouper
+```{r}
+library(haven)
+IP2015 <- read_sav("C:/Users/GrossKennen/OneDrive for Business/MEPS/2015/IP/IP2015.sav")
+View(IP2015)
+
+library(readxl)
+CondCodes <- read_excel("C:/Users/GrossKennen/OneDrive for Business/MEPS/CODES/MEPSConditionCodes.xlsx")
+View(CondCodes)
+```
+
+Join IP 2015 to master grouper of CCS to SIngle Tier Service Line 
+```{r}
+
+
+
+IP2015 <- transform(IP2015, CCS = as.numeric(IPCCC1X))
+CondCodes$CCS<-as.numeric(CondCodes$CCSCodes)
+IP2015 <-IP2015 %>% left_join (CondCodes, c("CCS" = "CCS"))
+```
+
+Turn specialty tier column into one column per tier with 1, 0 
+```{r}
+
+rename(IP2015, tier = SingleTierServiceLine)
+IP15_spread <- IP2015 %>% mutate (yesno=1) %>% distinct %>% spread (SingleTierServiceLine, yesno, fill = 0) 
+```
+
+Load Population file
+```{r}
+library(haven)
+pop2015 <- read_sav("C:/Users/GrossKennen/OneDrive for Business/MEPS/2015/Population/Population2015.sav")
+
+```
+Recode Age
+```{r}
+pop2015<- mutate (pop2015, agecat4 = ifelse (AGELAST <18, "0-17", ifelse (AGELAST >17 & AGELAST<45, "18_44", ifelse (AGELAST >44 & AGELAST<65, "45-64", "65+"))))
+pop2015<- mutate (pop2015, agecat4num = ifelse (AGELAST <18, 1, ifelse (AGELAST >17 & AGELAST<45, 2, ifelse (AGELAST >44 & AGELAST<65, 3, 4))))
+
+
+```
+Recode Insurance 
+```{r}
+pop2015<- mutate (pop2015, ins5_num = ifelse (INSURC15 == 1, 1, ifelse (INSURC15 == 2, 2, ifelse (INSURC15 ==4 | INSURC15 ==5, 3, ifelse (INSURC15 == 7 | INSURC15 == 3, 4, ifelse (INSURC15 == 6, 5, ifelse (INSURC15 == 8, 3,0)))))))
+
+pop2015<- mutate (pop2015, ins5= ifelse (INSURC15 == 1, "Commercial", ifelse (INSURC15 == 2, "Medicaid", ifelse (INSURC15 ==4 | INSURC15 ==5, "Medicare", ifelse (INSURC15 == 7 | INSURC15 == 3, "Uninsured", ifelse (INSURC15 == 6, "Dual", ifelse (INSURC15 == 8, "Medicare",0)))))))
+```
+
+Create Table of Freq of Tier 1 by unique ID
+```{r}
+IP15count <- select (IP15_spread, DUPERSID, Cardiovascular: Urology) %>% group_by (DUPERSID ) %>% summarize (Cardiovascular_sum = sum(Cardiovascular), 
+Digestive_sum = sum(Digestive),
+ENT_sum = sum(ENT),
+Gynecology_sum = sum(Gynecology),
+Hepatobiliary_sum = sum(Hepatobiliary),
+Infection_sum = sum(Infection),
+Neuroscience_sum = sum(Neuroscience),
+Obsetetrics_sum = sum(Obsetetrics),
+Oncology_sum = sum(Oncology),
+Ophthalmology_sum = sum(Ophthalmology),
+Orthopedics_sum = sum(Orthopedics),
+OtherMedical_sum = sum(OtherMedical),
+Psychiatry_sum = sum(Psychiatry),
+Respiratory_sum = sum(Respiratory),
+Skin_sum = sum(Skin),
+TraumaInjuries_sum = sum(TraumaInjuries),
+Urology_sum = sum(Urology),
+Endocrinology_sum = sum(Endocrinology),
+Hematology_sum = sum(Hematology))
+
+```
+
+Join IP counts by Service to Pop file 
+```{r}
+
+pop2015small <- pop2015 %>% select(DUPERSID, ins5, agecat4, agecat4num, VARPSU, VARSTR,PERWT15F)
+
+pop2015small <- transform(pop2015small, DUPERSID = as.numeric(DUPERSID))
+IP15count <- transform(IP15count, DUPERSID = as.numeric(DUPERSID))
+pop2015small <-pop2015small %>% left_join (IP15count, c("DUPERSID" = "DUPERSID"))
+
+pop2015small[is.na(pop2015small)]<- 0
+
+variable.names(pop2015small)
+
+```
+
+
+```{r}
+
+rm(CondCodes, IP15_group, IP15_spread, IP15count, IP2015, MEPSConditionCodes, pop2015)
+
+options(survey.lonely.psu='adjust')
+
+mepsdsgn = svydesign(id = ~VARPSU,
+                     strata = ~VARSTR,
+                     weights = ~PERWT15F,
+                     data = pop2015small,
+                     nest = TRUE)  
+
+
+
+
+
+MepsIPRates15 <- svyby(~Cardiovascular_sum:~Gynecology_sum:~Oncology_sum:~Infection_sum:~ENT_sum:~Hepatobiliary_sum:~Neuroscience_sum:~Obsetetrics_sum:~Ophthalmology_sum:~Orthopedics_sum: ~OtherMedical_sum:~Psychiatry_sum:~Respiratory_sum:~Skin_sum:~TraumaInjuries_sum:~Urology_sum:~Endocrinology_sum:~Hematology_sum: ~Digestive_sum , ~agecat4:~ins5, mepsdsgn, svymean)
+
+MepsIPRates15<- select(MepsIPRates15, -ins5)
+
+library(foreign)
+write.foreign(as.data.frame(MepsIPRates15), "C:/Users/GrossKennen/OneDrive for Business/iVantage/Forecasting/Data4/exported_MepsIPRate15b.txt", "C:/Users/GrossKennen/OneDrive for Business/iVantage/Forecasting/Data4/exported_MepsIPRate15b.sps", package="SPSS")
+
+              
+            
+
